@@ -2,6 +2,40 @@
 
 Guidance for Claude Code when working in this repository.
 
+## Glossary
+
+Domain terms used across the docs, code, and SMS bodies. Keep these definitions in mind when reading fixtures, prompts, and qualification logic.
+
+**Legal / intake**
+
+- **Attorney** — a lawyer licensed to represent clients; here, the on-call person who gets the SMS and decides whether to call the lead back.
+- **Retained** — the moment a client formally hires the attorney (signs a fee agreement); in our HubSpot pipeline, the "closed won" stage.
+- **Lead** — a potential client, i.e. any caller before qualification. Becomes a "case" if retained.
+- **Intake** — the process of gathering enough information from a caller to decide whether the firm will represent them.
+- **Qualification** — the decision "is this lead worth an attorney's time?"; driven by our 4-part gate + flags.
+- **Personal Injury (PI)** — the legal domain covering bodily-harm claims (car crashes, slip-and-fall, medical malpractice, etc.). Our v1 vertical.
+- **MVA** — Motor Vehicle Accident; the specific PI sub-type we handle in v1 (car/truck/motorcycle collisions).
+- **Statute of limitations** — the legal deadline after which a lawsuit can no longer be filed. Varies by state and claim type (Texas MVA is 2 years). If the incident is older, the case is dead on arrival.
+- **Tolled (statute)** — the deadline is paused or extended. Most common for minors: the clock doesn't start until they turn 18. Why `minor_involved` always routes to human review.
+- **Liability / at-fault** — who caused the accident. If our caller was at fault, there's no one else to sue, so the case is unqualified.
+- **Collectability** — whether the at-fault party (or their insurer) actually has assets to pay a judgment. An uninsured defendant with no assets = no recovery, even with a winning case.
+- **Uninsured Motorist (UM) coverage** — the caller's own auto policy add-on that pays out when the other driver is uninsured. Turns an otherwise uncollectable case into a qualified one.
+- **Hit-and-run** — at-fault driver flees the scene; the claim typically goes through the caller's UM coverage. Routes to human review because it's a UM/insurance-process case, not a standard third-party claim.
+- **Wrongful death** — a claim brought on behalf of someone killed by another's negligence. Different statute, different damages, different procedure — always human review.
+- **Non-qualified** — a lead that fails our criteria. Still captured politely; no attorney SMS; lands in HubSpot's `Non-Qualified` stage for record-keeping.
+- **Human review** — the "we can't auto-decide this" bucket. Attorney opens HubSpot, reads transcript + notes, decides manually.
+- **Bar rules** — the ethics rules each state's bar association imposes on lawyers. Relevant to us because the voice agent cannot make promises of representation (would violate rules on unauthorized practice / advertising).
+- **PHI** — Protected Health Information. Medical details captured in the call are sensitive; we keep them inside HubSpot + compliance storage, never in SMS bodies.
+- **Recording disclosure** — the spoken notice at the start of the call ("this call may be recorded"). Required in two-party-consent states; optional in one-party-consent states. Vapi picks the variant based on caller/firm state.
+
+**Tech / infrastructure**
+
+- **Webhook** — an HTTP endpoint we expose so Vapi can POST the end-of-call payload to us. Our webhook is `POST /webhook/mva-intake`.
+- **E.164** — the international phone number format (`+<country-code><number>`, no spaces/dashes). All phone fields use it.
+- **Idempotency** — the property that running the same operation twice has no extra effect. We're *not* idempotent yet — duplicate calls create duplicate deals. `vapi_call_id` is the key we'll use for dedup in Phase 3.
+- **Pipeline / Stage (HubSpot)** — pipeline = the overall sales process; stage = a single column in it. Our six stages map 1:1 to the routing buckets plus follow-on outcomes.
+- **Private App Token (HubSpot)** — the single-account auth token we use for API calls; begins with `pat-na2-...`. Stored as an n8n credential, never inline.
+
 ## Project
 
 **After-Hours Legal Intake Voice Agent** — a voice-first AI receptionist for law firms that captures, qualifies, and routes after-hours leads. Built on **Vapi** (voice) and **n8n** (orchestration).
