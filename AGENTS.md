@@ -8,56 +8,55 @@ Division of responsibilities between the two runtime agents in this system: the 
 
 **Runtime:** Vapi
 **Role:** Talk to the caller, run the structured interview, hand structured data to n8n.
+**Status:** Not yet built — Phase 3.
 
 ### Responsibilities
 
 - Answer the inbound call in under 2 seconds.
 - Greet with firm-branded opening line.
-- Run the qualification interview (see `project-building.md`).
-- Capture intake fields: name, phone, date of incident, location.
-- Handle unqualified callers gracefully — never hang up abruptly.
+- Run the qualification interview (see `project-building.md` → *Interview Beats*).
+- Capture all `intake` fields including `injury_description`, `age`, `death_involved`.
+- Collect answers for `qualification.at_fault`, `received_treatment`, `other_party_insured`, `caller_has_um_coverage` (bools/nulls).
+- Emit `qualification.flags[]` for ambiguous or edge-case answers (`at_fault_unsure`, `minor_involved`, `wrongful_death`, `out_of_state`, `multi_party`, `hit_and_run`).
+- Handle unqualified callers gracefully — **never hang up abruptly**.
 - End the call with a clear next-step message.
-- POST the final structured JSON to the n8n webhook.
+- POST the final structured JSON (matching the frozen contract below) to the n8n webhook.
 
 ### Must Not
 
 - Make the qualification *decision*. It collects answers; n8n decides.
-- Write directly to the CRM.
-- Send the attorney SMS.
-- Store audio or transcript on its own beyond the Vapi call record.
+- Write directly to the CRM or send SMS.
+- Emit free-form prose in qualification fields — those are deterministic bools/enums. Free prose belongs in `notes` or `injury_description`.
 
 ### Prompt Contract
 
-The system prompt must produce deterministic slots. Every answer maps to a named field in the final tool call / end-of-call report. No free-form summaries in the payload — those go in a separate `notes` field.
+The system prompt must produce deterministic slots. Every answer maps to a named field in the final end-of-call-report tool call. `notes` is the only field that carries free-form summary text.
 
 ---
 
 ## 2. n8n Orchestration Agent
 
-**Runtime:** n8n
-**Role:** Receive the Vapi payload, qualify, route, and notify.
+**Runtime:** n8n (local, `http://localhost:5678`)
+**Role:** Receive the Vapi payload, qualify, route to CRM + SMS.
+**Status:** Live. Workflow `MVA-Intake-v0.1-Phase1` (ID `Z9MKDm6ULzQtmRqA`), 20 nodes, active.
 
 ### Responsibilities
 
-- Expose a **Webhook** trigger node that Vapi calls at end-of-call.
-- Validate the payload shape and reject malformed requests.
-- Apply the firm's qualification rules (statute, fault, treatment, insurance).
-- Branch on `qualified` vs `non-qualified`.
-- **Qualified path:**
-  1. Create lead in the firm's CRM (Filevine / Litify / MyCase / Lawmatics).
-  2. Send SMS to the on-call attorney within 60 seconds.
-  3. Archive audio URL + transcript to compliance storage.
-- **Non-qualified path:**
-  1. Log the call to a `non-qualified` table / sheet.
-  2. No attorney notification.
-  3. Still archive audio + transcript.
-- Return a 200 response to Vapi with a correlation ID.
+- Expose `POST /webhook/mva-intake` for Vapi to call at end-of-call.
+- Validate the payload shape; reject malformed requests with `400` + error detail.
+- Apply the firm's qualification rules (statute + 4-part gate + `flags[]` edge cases).
+- Route to one of three buckets:
+  - **`qualified`:** create HubSpot Contact + Deal (stage `qualified`), SMS the on-call attorney with the deal URL, respond `200`.
+  - **`non_qualified`:** create HubSpot Contact + Deal (stage `non_qualified`), no SMS, respond `200`.
+  - **`human_review`:** create HubSpot Contact + Deal (stage `human_review`), SMS the attorney with `REVIEW —` prefix, respond `200`.
+- All three routes return a JSON response including `call_id`, `contact_id`, `deal_id`, `deal_url`, `sms_sid` (when sent), `reason`, `phase`.
 
 ### Must Not
 
 - Talk to the caller. Voice is Vapi's job.
-- Re-ask qualification questions. If a field is missing, flag it and route to a human-review queue — do not call back.
-- Hardcode firm-specific rules inside expressions. Put rule thresholds in a Set node or `n8n_manage_datatable` record at the top of the workflow so they are discoverable and tunable per-firm.
+- Re-ask qualification questions. If data is ambiguous, Vapi must emit a `flags[]` entry; n8n routes to `human_review` — it never calls back.
+- Hardcode firm-specific rules inside expressions. Stage IDs, statute threshold, attorney phone, Twilio sender all live in the top-of-workflow **Config** Set node so they are discoverable and tunable per-firm.
+- Store tokens inline. HubSpot + Twilio auth lives in n8n credentials, referenced by name on each node.
 
 ---
 
@@ -107,13 +106,32 @@ The system prompt must produce deterministic slots. Every answer maps to a named
   - `"hit_and_run"`
   - `"at_fault_unsure"`
 
-### Downstream Routing (n8n)
+### Downstream Routing (n8n, implemented in Phase 2)
 
-Each payload resolves to exactly one of three routes:
+Each payload resolves to exactly one of three routes. The Qualifier Code node emits `route` + `hubspot_stage_id`; the Switch Route node hands off to the right branch. Each branch creates HubSpot Contact → Deal (associated), then optionally sends SMS, then converges on `Respond 200`.
 
-1. `qualified` — all four gates pass AND `flags` is empty → create HubSpot contact + deal (stage `qualified`), SMS attorney, archive.
-2. `non_qualified` — any gate fails AND `flags` is empty → log to HubSpot with stage `non_qualified`, no SMS, archive.
-3. `human_review` — any `flags` entry, regardless of gate outcome → create HubSpot deal with stage `human_review`, SMS attorney with `REVIEW` prefix, archive.
+1. **`qualified`** — all four gates pass AND `flags` is empty → HubSpot contact + deal (stage `qualified`) + Twilio SMS.
+2. **`non_qualified`** — any gate fails AND `flags` is empty → HubSpot contact + deal (stage `non_qualified`), no SMS.
+3. **`human_review`** — any `flags` entry, regardless of gate outcome → HubSpot contact + deal (stage `human_review`) + Twilio SMS with `REVIEW —` prefix.
+
+Archive to separate compliance storage is deferred; HubSpot's deal `description` carries the `audio_url` for now.
+
+### Response Shape (Phase 2)
+
+```json
+{
+  "route": "qualified" | "non_qualified" | "human_review",
+  "call_id": "vapi_...",
+  "contact_id": "<HubSpot contact ID>",
+  "deal_id": "<HubSpot deal ID>",
+  "deal_url": "https://app-na2.hubspot.com/contacts/<portal>/record/0-3/<deal_id>",
+  "sms_sid": "SM..."  // present on qualified + human_review only
+  "reason": "<why this route was chosen>",
+  "phase": "phase-2"
+}
+```
+
+On validation failure: `400` with `{"error": "validation_failed", "detail": "<which field>"}`.
 
 ### Schema Change Discipline
 
