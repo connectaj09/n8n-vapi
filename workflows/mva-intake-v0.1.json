@@ -1,0 +1,251 @@
+{
+  "name": "MVA-Intake-v0.1-Phase1",
+  "nodes": [
+    {
+      "id": "webhook",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [240, 300],
+      "onError": "continueRegularOutput",
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "mva-intake",
+        "responseMode": "responseNode",
+        "options": {}
+      }
+    },
+    {
+      "id": "config",
+      "name": "Config",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [440, 300],
+      "parameters": {
+        "mode": "manual",
+        "includeOtherFields": true,
+        "assignments": {
+          "assignments": [
+            { "id": "c1", "name": "config.statute_years", "value": 2, "type": "number" },
+            { "id": "c2", "name": "config.firm_state", "value": "TX", "type": "string" },
+            { "id": "c3", "name": "config.stage_qualified", "value": "3549253347", "type": "string" },
+            { "id": "c4", "name": "config.stage_non_qualified", "value": "3549253349", "type": "string" },
+            { "id": "c5", "name": "config.stage_human_review", "value": "3549253348", "type": "string" },
+            { "id": "c6", "name": "config.pipeline_id", "value": "default", "type": "string" }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "validator",
+      "name": "Validator",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [640, 300],
+      "parameters": {
+        "language": "javaScript",
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Validator — pure schema check. Never throws.\nconst webhookData = $('Webhook').first().json;\nconst payload = webhookData.body || webhookData;\nconst config = $('Config').first().json.config;\n\nfunction checkSchema(p) {\n  if (!p || typeof p !== 'object') return 'payload is not an object';\n  const topKeys = ['call_id','caller_phone','started_at','ended_at','intake','qualification','audio_url','transcript'];\n  for (const k of topKeys) if (!(k in p)) return `missing top-level key: ${k}`;\n  if (typeof p.intake !== 'object' || p.intake === null) return 'intake must be an object';\n  const intakeKeys = ['name','phone','incident_date','location','injury_description','age','death_involved'];\n  for (const k of intakeKeys) if (!(k in p.intake)) return `missing intake.${k}`;\n  if (typeof p.qualification !== 'object' || p.qualification === null) return 'qualification must be an object';\n  const qualKeys = ['within_statute','at_fault','received_treatment','other_party_insured','caller_has_um_coverage','flags'];\n  for (const k of qualKeys) if (!(k in p.qualification)) return `missing qualification.${k}`;\n  if (typeof p.qualification.at_fault !== 'boolean') return 'qualification.at_fault must be boolean';\n  if (typeof p.qualification.received_treatment !== 'boolean') return 'qualification.received_treatment must be boolean';\n  if (typeof p.qualification.other_party_insured !== 'boolean') return 'qualification.other_party_insured must be boolean';\n  if (!Array.isArray(p.qualification.flags)) return 'qualification.flags must be array';\n  if (typeof p.intake.death_involved !== 'boolean') return 'intake.death_involved must be boolean';\n  if (typeof p.intake.age !== 'number') return 'intake.age must be number';\n  if (isNaN(Date.parse(p.intake.incident_date))) return 'intake.incident_date is not a valid date';\n  return null;\n}\n\nconst err = checkSchema(payload);\nreturn [{ json: { valid: err === null, validation_error: err, payload: payload, config: config } }];"
+      }
+    },
+    {
+      "id": "if_valid",
+      "name": "If Valid",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [840, 300],
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 2 },
+          "conditions": [
+            { "id": "cond1", "leftValue": "={{ $json.valid }}", "rightValue": true, "operator": { "type": "boolean", "operation": "equals" } }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "qualifier",
+      "name": "Qualifier",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1040, 220],
+      "parameters": {
+        "language": "javaScript",
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Qualifier — MVA decision table.\nconst item = $input.first().json;\nconst { payload, config } = item;\n\nconst incidentDate = new Date(payload.intake.incident_date);\nconst cutoff = new Date();\ncutoff.setFullYear(cutoff.getFullYear() - config.statute_years);\nconst within_statute = incidentDate >= cutoff;\n\nconst flags = payload.qualification.flags || [];\nlet route, reason, stage_id;\n\nif (flags.length > 0) {\n  route = 'human_review';\n  reason = 'Flags: ' + flags.join(',');\n  stage_id = config.stage_human_review;\n} else {\n  const otherInsured = payload.qualification.other_party_insured === true;\n  const umCoverage = payload.qualification.caller_has_um_coverage === true;\n  const insuranceGate = otherInsured || umCoverage;\n  const gatesPass = within_statute && payload.qualification.at_fault === false && payload.qualification.received_treatment === true && insuranceGate;\n  if (gatesPass) {\n    route = 'qualified';\n    reason = 'All 4 gates passed';\n    stage_id = config.stage_qualified;\n  } else {\n    route = 'non_qualified';\n    const failures = [];\n    if (!within_statute) failures.push('outside_statute');\n    if (payload.qualification.at_fault) failures.push('at_fault');\n    if (!payload.qualification.received_treatment) failures.push('no_treatment');\n    if (!insuranceGate) failures.push('no_insurance');\n    reason = failures.join(',');\n    stage_id = config.stage_non_qualified;\n  }\n}\n\nreturn [{ json: { call_id: payload.call_id, caller_phone: payload.caller_phone, route, reason, hubspot_stage_id: stage_id, within_statute, phase: 'phase-1-stub' } }];"
+      }
+    },
+    {
+      "id": "switch_route",
+      "name": "Switch Route",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.4,
+      "position": [1240, 220],
+      "parameters": {
+        "mode": "rules",
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 2 },
+                "conditions": [
+                  { "id": "r1", "leftValue": "={{ $json.route }}", "rightValue": "qualified", "operator": { "type": "string", "operation": "equals" } }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "qualified"
+            },
+            {
+              "conditions": {
+                "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 2 },
+                "conditions": [
+                  { "id": "r2", "leftValue": "={{ $json.route }}", "rightValue": "non_qualified", "operator": { "type": "string", "operation": "equals" } }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "non_qualified"
+            },
+            {
+              "conditions": {
+                "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 2 },
+                "conditions": [
+                  { "id": "r3", "leftValue": "={{ $json.route }}", "rightValue": "human_review", "operator": { "type": "string", "operation": "equals" } }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "human_review"
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "stub_qualified",
+      "name": "Stub Qualified",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [1440, 100],
+      "parameters": {
+        "mode": "manual",
+        "includeOtherFields": true,
+        "assignments": {
+          "assignments": [
+            { "id": "sq1", "name": "stub_type", "value": "qualified", "type": "string" },
+            { "id": "sq2", "name": "would_send", "value": "HubSpot contact+deal (stage qualified); Twilio SMS to on-call attorney with HubSpot deal link", "type": "string" }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "stub_non_qualified",
+      "name": "Stub Non-Qualified",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [1440, 220],
+      "parameters": {
+        "mode": "manual",
+        "includeOtherFields": true,
+        "assignments": {
+          "assignments": [
+            { "id": "sn1", "name": "stub_type", "value": "non_qualified", "type": "string" },
+            { "id": "sn2", "name": "would_send", "value": "HubSpot deal (stage non_qualified); no SMS", "type": "string" }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "stub_human_review",
+      "name": "Stub Human Review",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [1440, 340],
+      "parameters": {
+        "mode": "manual",
+        "includeOtherFields": true,
+        "assignments": {
+          "assignments": [
+            { "id": "sh1", "name": "stub_type", "value": "human_review", "type": "string" },
+            { "id": "sh2", "name": "would_send", "value": "HubSpot deal (stage human_review); Twilio SMS prefixed 'REVIEW —'", "type": "string" }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "respond_ok",
+      "name": "Respond 200",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [1640, 220],
+      "parameters": {
+        "respondWith": "firstIncomingItem",
+        "options": {}
+      }
+    },
+    {
+      "id": "build_error",
+      "name": "Build Error Body",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [1040, 400],
+      "parameters": {
+        "mode": "manual",
+        "includeOtherFields": false,
+        "assignments": {
+          "assignments": [
+            { "id": "e1", "name": "error", "value": "validation_failed", "type": "string" },
+            { "id": "e2", "name": "detail", "value": "={{ $json.validation_error }}", "type": "string" }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "respond_400",
+      "name": "Respond 400",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [1240, 400],
+      "parameters": {
+        "respondWith": "firstIncomingItem",
+        "options": { "responseCode": 400 }
+      }
+    }
+  ],
+  "connections": {
+    "Webhook": { "main": [[{ "node": "Config", "type": "main", "index": 0 }]] },
+    "Config": { "main": [[{ "node": "Validator", "type": "main", "index": 0 }]] },
+    "Validator": { "main": [[{ "node": "If Valid", "type": "main", "index": 0 }]] },
+    "If Valid": {
+      "main": [
+        [{ "node": "Qualifier", "type": "main", "index": 0 }],
+        [{ "node": "Build Error Body", "type": "main", "index": 0 }]
+      ]
+    },
+    "Qualifier": { "main": [[{ "node": "Switch Route", "type": "main", "index": 0 }]] },
+    "Switch Route": {
+      "main": [
+        [{ "node": "Stub Qualified", "type": "main", "index": 0 }],
+        [{ "node": "Stub Non-Qualified", "type": "main", "index": 0 }],
+        [{ "node": "Stub Human Review", "type": "main", "index": 0 }]
+      ]
+    },
+    "Stub Qualified": { "main": [[{ "node": "Respond 200", "type": "main", "index": 0 }]] },
+    "Stub Non-Qualified": { "main": [[{ "node": "Respond 200", "type": "main", "index": 0 }]] },
+    "Stub Human Review": { "main": [[{ "node": "Respond 200", "type": "main", "index": 0 }]] },
+    "Build Error Body": { "main": [[{ "node": "Respond 400", "type": "main", "index": 0 }]] }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "all"
+  }
+}

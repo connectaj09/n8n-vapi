@@ -12,7 +12,7 @@ Read `project-building.md` for the full architecture. Read `AGENTS.md` for the d
 
 - **Vapi** — voice layer (ASR, LLM dialog, TTS). Owns the qualification interview.
 - **n8n** — orchestration layer. Receives structured JSON from Vapi, applies intake criteria, routes outputs.
-- **CRM targets** — Filevine, Litify, MyCase, Lawmatics (one per deployment).
+- **CRM targets (v1)** — **HubSpot Free CRM**, one tenant per firm, integrated via a HubSpot Private App token stored as an n8n credential. Filevine, Litify, MyCase, Lawmatics are future integration targets once a firm needs legal-native features.
 - **SMS** — attorney notification channel (Twilio or equivalent).
 - **Storage** — audio + transcript retention for compliance.
 

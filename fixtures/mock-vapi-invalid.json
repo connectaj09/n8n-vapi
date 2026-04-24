@@ -1,0 +1,25 @@
+{
+  "call_id": "vapi_mock_invalid_001",
+  "caller_phone": "+14155554444",
+  "started_at": "2026-04-24T02:00:00Z",
+  "ended_at": "2026-04-24T02:05:00Z",
+  "intake": {
+    "name": "Test Invalid",
+    "phone": "+14155554444",
+    "incident_date": "2026-04-24",
+    "location": "El Paso, TX",
+    "injury_description": "",
+    "age": 30,
+    "death_involved": false
+  },
+  "qualification": {
+    "within_statute": true,
+    "at_fault": false,
+    "other_party_insured": true,
+    "caller_has_um_coverage": null,
+    "flags": []
+  },
+  "audio_url": "https://storage.example.com/audio/vapi_mock_invalid_001.mp3",
+  "transcript": "",
+  "notes": "Intentionally missing qualification.received_treatment to exercise the validator negative path."
+}

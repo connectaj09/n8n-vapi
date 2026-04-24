@@ -1,0 +1,26 @@
+{
+  "call_id": "vapi_mock_human_review_001",
+  "caller_phone": "+14155553333",
+  "started_at": "2026-04-24T01:30:00Z",
+  "ended_at": "2026-04-24T01:36:45Z",
+  "intake": {
+    "name": "Sarah Kim",
+    "phone": "+14155553333",
+    "incident_date": "2026-04-20",
+    "location": "Houston, TX",
+    "injury_description": "Daughter (age 14), broken arm; treated at Texas Children's Hospital",
+    "age": 14,
+    "death_involved": false
+  },
+  "qualification": {
+    "within_statute": true,
+    "at_fault": false,
+    "received_treatment": true,
+    "other_party_insured": true,
+    "caller_has_um_coverage": null,
+    "flags": ["minor_involved"]
+  },
+  "audio_url": "https://storage.example.com/audio/vapi_mock_human_review_001.mp3",
+  "transcript": "Mother calling on behalf of 14-year-old daughter. Passenger injured in side-impact collision. Statute may be tolled.",
+  "notes": "Minor involved — always route to human review even though all four gates nominally pass."
+}

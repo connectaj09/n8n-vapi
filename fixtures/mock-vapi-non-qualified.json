@@ -1,0 +1,26 @@
+{
+  "call_id": "vapi_mock_non_qualified_001",
+  "caller_phone": "+14155552222",
+  "started_at": "2026-04-23T23:00:00Z",
+  "ended_at": "2026-04-23T23:06:15Z",
+  "intake": {
+    "name": "John Davis",
+    "phone": "+14155552222",
+    "incident_date": "2026-04-15",
+    "location": "Austin, TX",
+    "injury_description": "Minor whiplash, no treatment sought",
+    "age": 42,
+    "death_involved": false
+  },
+  "qualification": {
+    "within_statute": true,
+    "at_fault": true,
+    "received_treatment": false,
+    "other_party_insured": true,
+    "caller_has_um_coverage": null,
+    "flags": []
+  },
+  "audio_url": "https://storage.example.com/audio/vapi_mock_non_qualified_001.mp3",
+  "transcript": "Caller admitted running a red light on Lamar. Rear-ended the vehicle in front. No treatment sought.",
+  "notes": "Caller at fault + no treatment. Non-qualifying on two gates."
+}

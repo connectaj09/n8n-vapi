@@ -63,6 +63,8 @@ The system prompt must produce deterministic slots. Every answer maps to a named
 
 ## Contract: Vapi → n8n Webhook Payload
 
+> **Status:** FROZEN as of Phase 1 (workflow `MVA-Intake-v0.1-Phase1`, n8n ID `Z9MKDm6ULzQtmRqA`). Any future change requires bumping the workflow version and updating all three of: Vapi assistant tool def, n8n validator, and this document.
+
 ```json
 {
   "call_id": "vapi_...",
@@ -73,13 +75,18 @@ The system prompt must produce deterministic slots. Every answer maps to a named
     "name": "string",
     "phone": "string",
     "incident_date": "YYYY-MM-DD",
-    "location": "string"
+    "location": "string",
+    "injury_description": "string",
+    "age": 0,
+    "death_involved": false
   },
   "qualification": {
     "within_statute": true,
     "at_fault": false,
     "received_treatment": true,
-    "other_party_insured": true
+    "other_party_insured": true,
+    "caller_has_um_coverage": null,
+    "flags": []
   },
   "audio_url": "https://...",
   "transcript": "string",
@@ -87,11 +94,35 @@ The system prompt must produce deterministic slots. Every answer maps to a named
 }
 ```
 
+### Field Notes
+
+- `intake.age` — used by n8n to flag minors (`< 18`) into the `human_review` path, since statute of limitations is typically tolled for minors.
+- `intake.death_involved` — routes to the wrongful-death path, which has a different statute and always requires human review.
+- `qualification.caller_has_um_coverage` — only relevant when `other_party_insured` is false. Enables the uninsured-motorist claim path.
+- `qualification.flags` — array of string flags that force `human_review` routing regardless of the four-part gate. Known values:
+  - `"minor_involved"`
+  - `"wrongful_death"`
+  - `"out_of_state"`
+  - `"multi_party"`
+  - `"hit_and_run"`
+  - `"at_fault_unsure"`
+
+### Downstream Routing (n8n)
+
+Each payload resolves to exactly one of three routes:
+
+1. `qualified` — all four gates pass AND `flags` is empty → create HubSpot contact + deal (stage `qualified`), SMS attorney, archive.
+2. `non_qualified` — any gate fails AND `flags` is empty → log to HubSpot with stage `non_qualified`, no SMS, archive.
+3. `human_review` — any `flags` entry, regardless of gate outcome → create HubSpot deal with stage `human_review`, SMS attorney with `REVIEW` prefix, archive.
+
+### Schema Change Discipline
+
 Any change to this schema must be reflected in:
 
 1. The Vapi assistant's tool / end-of-call-report definition.
 2. The n8n webhook validator.
 3. `project-building.md` architecture doc.
+4. The HubSpot custom-property list (see *HubSpot Field Mapping* in `project-building.md`).
 
 ---
 

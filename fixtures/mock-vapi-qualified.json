@@ -1,0 +1,26 @@
+{
+  "call_id": "vapi_mock_qualified_001",
+  "caller_phone": "+14155551234",
+  "started_at": "2026-04-23T22:15:00Z",
+  "ended_at": "2026-04-23T22:20:30Z",
+  "intake": {
+    "name": "Maria Lopez",
+    "phone": "+14155551234",
+    "incident_date": "2026-04-22",
+    "location": "Dallas, TX",
+    "injury_description": "Neck and back pain; transported to Mercy ER",
+    "age": 34,
+    "death_involved": false
+  },
+  "qualification": {
+    "within_statute": true,
+    "at_fault": false,
+    "received_treatment": true,
+    "other_party_insured": true,
+    "caller_has_um_coverage": null,
+    "flags": []
+  },
+  "audio_url": "https://storage.example.com/audio/vapi_mock_qualified_001.mp3",
+  "transcript": "Caller was rear-ended on I-35 southbound, Dallas. Taken to Mercy ER by ambulance. Other driver has full coverage.",
+  "notes": "Standard MVA rear-end case. Treated same day. Other party insured."
+}

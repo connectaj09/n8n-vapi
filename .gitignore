@@ -1,0 +1,15 @@
+# Secrets — never commit
+Pipeline-ids.txt
+*.env
+.env.*
+credentials.json
+*-secrets.*
+
+# Claude Code local state
+.claude/
+
+# OS / editor junk
+.DS_Store
+Thumbs.db
+*.swp
+*~
