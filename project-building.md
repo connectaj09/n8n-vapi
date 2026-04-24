@@ -301,11 +301,26 @@ Routing buckets (see `AGENTS.md` → Downstream Routing):
 
 `workflows/mva-intake-v0.2.json` — importable; replace the `attorney_phone` / `twilio_from` placeholders before activating on a new instance.
 
-### Phase 3 — Integration
+### Phase 3 — Integration (Vapi + dedup + ngrok)
 
-- End-to-end: real call → Vapi → n8n → CRM + SMS + archive.
-- Golden path + 3 unqualified scenarios + 1 partial-info scenario.
-- Verify SLAs: <2s pickup, <60s attorney SMS.
+- Add idempotency: HubSpot `Search Deal by vapi_call_id` before Switch Route; short-circuit to `Respond 200` if duplicate. ✅ done.
+- Wire real Vapi assistant + phone number. Config lives in Vapi dashboard; reference at `docs/vapi-setup.md`. *User action — not in repo.*
+- ngrok tunnel (`scripts/ngrok-start.sh`) exposes local n8n for Vapi webhooks. URL rotates per session on free tier.
+- Golden path + 3 unqualified scenarios + dedup = **5/5 passing** via `scripts/test-intake.sh`.
+- SLA verification (<2s pickup, <60s SMS) happens during the first live call.
+
+#### Dedup behavior
+
+Workflow now has 23 nodes. After Qualifier, the flow takes a new hop: `HTTP: Search Deal by call_id → If Existing Deal`.
+
+- `If Existing Deal` **true** → `Set: Dedup Response` → `Respond 200` with `{duplicate: true, deal_id, deal_url, note, phase: "phase-3"}`. Nothing is created or sent.
+- `If Existing Deal` **false** → existing Switch Route + 3 branches (Phase 2 logic). Unchanged.
+
+**Limitation:** HubSpot's search index has ~5-10s eventual-consistency lag. Vapi retries firing within that window may still create duplicate deals. Production retries typically arrive >30s apart so this is low-risk.
+
+#### Workflow snapshot
+
+`workflows/mva-intake-v0.3.json` — v0.3 importable snapshot including the 3 new dedup nodes + the Switch Route fix (leftValue now references `$('Qualifier').item.json.route` instead of `$json.route` because `$json` is the HTTP Search response at that point).
 
 ### Phase 4 — Pilot
 

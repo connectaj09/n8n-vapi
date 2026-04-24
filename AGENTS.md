@@ -106,9 +106,21 @@ The system prompt must produce deterministic slots. Every answer maps to a named
   - `"hit_and_run"`
   - `"at_fault_unsure"`
 
-### Downstream Routing (n8n, implemented in Phase 2)
+### Dedup (Phase 3)
 
-Each payload resolves to exactly one of three routes. The Qualifier Code node emits `route` + `hubspot_stage_id`; the Switch Route node hands off to the right branch. Each branch creates HubSpot Contact → Deal (associated), then optionally sends SMS, then converges on `Respond 200`.
+Between Qualifier and Switch Route, the flow searches HubSpot for an existing deal with the same `vapi_call_id`. If one is found, Switch Route is skipped and a short-circuit response is returned — no duplicate contact, no duplicate deal, no duplicate SMS. This guards against Vapi webhook retries after timeouts.
+
+Response when deduplicated:
+
+```json
+{"duplicate": true, "call_id": "...", "deal_id": "...", "deal_url": "...", "note": "Already processed - duplicate call_id", "phase": "phase-3"}
+```
+
+Caveat: HubSpot search indexing is eventually-consistent (~5-10s lag). A retry inside that window may still create a duplicate. Production retries are typically >30s apart.
+
+### Downstream Routing (n8n, implemented in Phase 2, preserved in Phase 3)
+
+Each non-duplicate payload resolves to exactly one of three routes. The Qualifier Code node emits `route` + `hubspot_stage_id`; the Switch Route node hands off to the right branch. Each branch creates HubSpot Contact → Deal (associated), then optionally sends SMS, then converges on `Respond 200`.
 
 1. **`qualified`** — all four gates pass AND `flags` is empty → HubSpot contact + deal (stage `qualified`) + Twilio SMS.
 2. **`non_qualified`** — any gate fails AND `flags` is empty → HubSpot contact + deal (stage `non_qualified`), no SMS.

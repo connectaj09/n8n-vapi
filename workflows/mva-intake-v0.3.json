@@ -1,0 +1,447 @@
+{
+  "name": "MVA-Intake-v0.1-Phase1",
+  "nodes": [
+    {
+      "id": "webhook",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [240, 300],
+      "onError": "continueRegularOutput",
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "mva-intake",
+        "responseMode": "responseNode",
+        "options": {}
+      }
+    },
+    {
+      "id": "config",
+      "name": "Config",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [440, 300],
+      "parameters": {
+        "mode": "manual",
+        "includeOtherFields": true,
+        "assignments": {
+          "assignments": [
+            { "id": "c1", "name": "config.statute_years", "value": 2, "type": "number" },
+            { "id": "c2", "name": "config.firm_state", "value": "TX", "type": "string" },
+            { "id": "c3", "name": "config.stage_qualified", "value": "3549253347", "type": "string" },
+            { "id": "c4", "name": "config.stage_non_qualified", "value": "3549253349", "type": "string" },
+            { "id": "c5", "name": "config.stage_human_review", "value": "3549253348", "type": "string" },
+            { "id": "c6", "name": "config.pipeline_id", "value": "default", "type": "string" },
+            { "id": "c7", "name": "config.attorney_phone", "value": "+PASTE_E164_HERE", "type": "string" },
+            { "id": "c8", "name": "config.twilio_from", "value": "+PASTE_E164_HERE", "type": "string" }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "validator",
+      "name": "Validator",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [640, 300],
+      "parameters": {
+        "language": "javaScript",
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Validator — pure schema check. Never throws.\nconst webhookData = $('Webhook').first().json;\nconst payload = webhookData.body || webhookData;\nconst config = $('Config').first().json.config;\n\nfunction checkSchema(p) {\n  if (!p || typeof p !== 'object') return 'payload is not an object';\n  const topKeys = ['call_id','caller_phone','started_at','ended_at','intake','qualification','audio_url','transcript'];\n  for (const k of topKeys) if (!(k in p)) return `missing top-level key: ${k}`;\n  if (typeof p.intake !== 'object' || p.intake === null) return 'intake must be an object';\n  const intakeKeys = ['name','phone','incident_date','location','injury_description','age','death_involved'];\n  for (const k of intakeKeys) if (!(k in p.intake)) return `missing intake.${k}`;\n  if (typeof p.qualification !== 'object' || p.qualification === null) return 'qualification must be an object';\n  const qualKeys = ['within_statute','at_fault','received_treatment','other_party_insured','caller_has_um_coverage','flags'];\n  for (const k of qualKeys) if (!(k in p.qualification)) return `missing qualification.${k}`;\n  if (typeof p.qualification.at_fault !== 'boolean') return 'qualification.at_fault must be boolean';\n  if (typeof p.qualification.received_treatment !== 'boolean') return 'qualification.received_treatment must be boolean';\n  if (typeof p.qualification.other_party_insured !== 'boolean') return 'qualification.other_party_insured must be boolean';\n  if (!Array.isArray(p.qualification.flags)) return 'qualification.flags must be array';\n  if (typeof p.intake.death_involved !== 'boolean') return 'intake.death_involved must be boolean';\n  if (typeof p.intake.age !== 'number') return 'intake.age must be number';\n  if (isNaN(Date.parse(p.intake.incident_date))) return 'intake.incident_date is not a valid date';\n  return null;\n}\n\nconst err = checkSchema(payload);\nreturn [{ json: { valid: err === null, validation_error: err, payload: payload, config: config } }];"
+      }
+    },
+    {
+      "id": "if_valid",
+      "name": "If Valid",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [840, 300],
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 2 },
+          "conditions": [
+            { "id": "cond1", "leftValue": "={{ $json.valid }}", "rightValue": true, "operator": { "type": "boolean", "operation": "equals" } }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "qualifier",
+      "name": "Qualifier",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1040, 220],
+      "parameters": {
+        "language": "javaScript",
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Qualifier — MVA decision table.\nconst item = $input.first().json;\nconst { payload, config } = item;\n\nconst incidentDate = new Date(payload.intake.incident_date);\nconst cutoff = new Date();\ncutoff.setFullYear(cutoff.getFullYear() - config.statute_years);\nconst within_statute = incidentDate >= cutoff;\n\nconst flags = payload.qualification.flags || [];\nlet route, reason, stage_id;\n\nif (flags.length > 0) {\n  route = 'human_review';\n  reason = 'Flags: ' + flags.join(',');\n  stage_id = config.stage_human_review;\n} else {\n  const otherInsured = payload.qualification.other_party_insured === true;\n  const umCoverage = payload.qualification.caller_has_um_coverage === true;\n  const insuranceGate = otherInsured || umCoverage;\n  const gatesPass = within_statute && payload.qualification.at_fault === false && payload.qualification.received_treatment === true && insuranceGate;\n  if (gatesPass) {\n    route = 'qualified';\n    reason = 'All 4 gates passed';\n    stage_id = config.stage_qualified;\n  } else {\n    route = 'non_qualified';\n    const failures = [];\n    if (!within_statute) failures.push('outside_statute');\n    if (payload.qualification.at_fault) failures.push('at_fault');\n    if (!payload.qualification.received_treatment) failures.push('no_treatment');\n    if (!insuranceGate) failures.push('no_insurance');\n    reason = failures.join(',');\n    stage_id = config.stage_non_qualified;\n  }\n}\n\nreturn [{ json: { call_id: payload.call_id, caller_phone: payload.caller_phone, route, reason, hubspot_stage_id: stage_id, within_statute, phase: 'phase-1-stub' } }];"
+      }
+    },
+    {
+      "id": "switch_route",
+      "name": "Switch Route",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.4,
+      "position": [1240, 220],
+      "parameters": {
+        "mode": "rules",
+        "rules": {
+          "values": [
+            { "conditions": { "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 2 }, "conditions": [{ "id": "r1", "leftValue": "={{ $('Qualifier').item.json.route }}", "rightValue": "qualified", "operator": { "type": "string", "operation": "equals" } }], "combinator": "and" }, "renameOutput": true, "outputKey": "qualified" },
+            { "conditions": { "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 2 }, "conditions": [{ "id": "r2", "leftValue": "={{ $('Qualifier').item.json.route }}", "rightValue": "non_qualified", "operator": { "type": "string", "operation": "equals" } }], "combinator": "and" }, "renameOutput": true, "outputKey": "non_qualified" },
+            { "conditions": { "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 2 }, "conditions": [{ "id": "r3", "leftValue": "={{ $('Qualifier').item.json.route }}", "rightValue": "human_review", "operator": { "type": "string", "operation": "equals" } }], "combinator": "and" }, "renameOutput": true, "outputKey": "human_review" }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "build_error",
+      "name": "Build Error Body",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [1040, 400],
+      "parameters": {
+        "mode": "manual",
+        "includeOtherFields": false,
+        "assignments": {
+          "assignments": [
+            { "id": "e1", "name": "error", "value": "validation_failed", "type": "string" },
+            { "id": "e2", "name": "detail", "value": "={{ $json.validation_error }}", "type": "string" }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "respond_400",
+      "name": "Respond 400",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [1240, 400],
+      "parameters": {
+        "respondWith": "firstIncomingItem",
+        "options": { "responseCode": 400 }
+      }
+    },
+    {
+      "name": "HubSpot: Create Contact Q",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1440, 80],
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.hubapi.com/crm/v3/objects/contacts",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "hubspotAppToken",
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({properties: {firstname: (($('Validator').item.json.payload.intake.name || '').split(' ')[0] || 'Caller'), lastname: (($('Validator').item.json.payload.intake.name || '').split(' ').slice(1).join(' ') || 'Unknown'), phone: $('Validator').item.json.payload.caller_phone, lifecyclestage: 'lead'} }) }}",
+        "options": {}
+      },
+      "credentials": { "hubspotAppToken": { "name": "HubSpot App Token account" } }
+    },
+    {
+      "name": "HubSpot: Create Deal Q",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1640, 80],
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.hubapi.com/crm/v3/objects/deals",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "hubspotAppToken",
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({properties: {dealname: 'MVA Intake - ' + ($('Validator').item.json.payload.intake.name || 'Unknown') + ' - ' + $('Validator').item.json.payload.intake.incident_date, pipeline: $('Validator').item.json.config.pipeline_id, dealstage: $('Qualifier').item.json.hubspot_stage_id, incident_date: $('Validator').item.json.payload.intake.incident_date, incident_location: $('Validator').item.json.payload.intake.location, within_statute: $('Qualifier').item.json.within_statute ? 'true' : 'false', at_fault: $('Validator').item.json.payload.qualification.at_fault ? 'true' : 'false', received_treatment: $('Validator').item.json.payload.qualification.received_treatment ? 'true' : 'false', other_party_insured: $('Validator').item.json.payload.qualification.other_party_insured ? 'true' : 'false', review_flags: ($('Validator').item.json.payload.qualification.flags || []).join(','), vapi_call_id: $('Validator').item.json.payload.call_id, description: 'Injury: ' + ($('Validator').item.json.payload.intake.injury_description || 'n/a') + '\\nCaller age: ' + $('Validator').item.json.payload.intake.age + ' | Death: ' + ($('Validator').item.json.payload.intake.death_involved ? 'Yes' : 'No') + '\\nReason: ' + $('Qualifier').item.json.reason + '\\nCall: ' + $('Validator').item.json.payload.started_at + ' to ' + $('Validator').item.json.payload.ended_at + '\\nAudio: ' + $('Validator').item.json.payload.audio_url + '\\n\\n[Notes]\\n' + ($('Validator').item.json.payload.notes || '')}, associations: [{to: {id: $json.id}, types: [{associationCategory: 'HUBSPOT_DEFINED', associationTypeId: 3}]}]}) }}",
+        "options": {}
+      },
+      "credentials": { "hubspotAppToken": { "name": "HubSpot App Token account" } }
+    },
+    {
+      "name": "Twilio: SMS Q",
+      "type": "n8n-nodes-base.twilio",
+      "typeVersion": 1,
+      "position": [1840, 80],
+      "parameters": {
+        "resource": "sms",
+        "operation": "send",
+        "from": "={{ $('Validator').item.json.config.twilio_from }}",
+        "to": "={{ $('Validator').item.json.config.attorney_phone }}",
+        "message": "={{ 'New qualified MVA lead - ' + $('Validator').item.json.payload.intake.name + ', ' + $('Validator').item.json.payload.intake.location + ', incident ' + $('Validator').item.json.payload.intake.incident_date + '. Reason: ' + $('Qualifier').item.json.reason + '. Deal: https://app-na2.hubspot.com/contacts/245727791/record/0-3/' + $json.id }}",
+        "toWhatsapp": false
+      },
+      "onError": "continueRegularOutput",
+      "credentials": { "twilioApi": { "name": "Twilio account" } }
+    },
+    {
+      "name": "Set: Response Q",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [2040, 80],
+      "parameters": {
+        "mode": "manual",
+        "includeOtherFields": false,
+        "assignments": {
+          "assignments": [
+            { "id": "rq1", "name": "route", "value": "qualified", "type": "string" },
+            { "id": "rq2", "name": "call_id", "value": "={{ $('Validator').item.json.payload.call_id }}", "type": "string" },
+            { "id": "rq3", "name": "contact_id", "value": "={{ $('HubSpot: Create Contact Q').item.json.id }}", "type": "string" },
+            { "id": "rq4", "name": "deal_id", "value": "={{ $('HubSpot: Create Deal Q').item.json.id }}", "type": "string" },
+            { "id": "rq5", "name": "sms_sid", "value": "={{ $json.sid }}", "type": "string" },
+            { "id": "rq6", "name": "deal_url", "value": "={{ 'https://app-na2.hubspot.com/contacts/245727791/record/0-3/' + $('HubSpot: Create Deal Q').item.json.id }}", "type": "string" },
+            { "id": "rq7", "name": "reason", "value": "={{ $('Qualifier').item.json.reason }}", "type": "string" },
+            { "id": "rq8", "name": "phase", "value": "phase-2", "type": "string" }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "name": "HubSpot: Create Contact NQ",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1440, 220],
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.hubapi.com/crm/v3/objects/contacts",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "hubspotAppToken",
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({properties: {firstname: (($('Validator').item.json.payload.intake.name || '').split(' ')[0] || 'Caller'), lastname: (($('Validator').item.json.payload.intake.name || '').split(' ').slice(1).join(' ') || 'Unknown'), phone: $('Validator').item.json.payload.caller_phone, lifecyclestage: 'subscriber'} }) }}",
+        "options": {}
+      },
+      "credentials": { "hubspotAppToken": { "name": "HubSpot App Token account" } }
+    },
+    {
+      "name": "HubSpot: Create Deal NQ",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1640, 220],
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.hubapi.com/crm/v3/objects/deals",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "hubspotAppToken",
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({properties: {dealname: 'MVA Intake - ' + ($('Validator').item.json.payload.intake.name || 'Unknown') + ' - ' + $('Validator').item.json.payload.intake.incident_date, pipeline: $('Validator').item.json.config.pipeline_id, dealstage: $('Qualifier').item.json.hubspot_stage_id, incident_date: $('Validator').item.json.payload.intake.incident_date, incident_location: $('Validator').item.json.payload.intake.location, within_statute: $('Qualifier').item.json.within_statute ? 'true' : 'false', at_fault: $('Validator').item.json.payload.qualification.at_fault ? 'true' : 'false', received_treatment: $('Validator').item.json.payload.qualification.received_treatment ? 'true' : 'false', other_party_insured: $('Validator').item.json.payload.qualification.other_party_insured ? 'true' : 'false', review_flags: ($('Validator').item.json.payload.qualification.flags || []).join(','), vapi_call_id: $('Validator').item.json.payload.call_id, description: 'Injury: ' + ($('Validator').item.json.payload.intake.injury_description || 'n/a') + '\\nCaller age: ' + $('Validator').item.json.payload.intake.age + ' | Death: ' + ($('Validator').item.json.payload.intake.death_involved ? 'Yes' : 'No') + '\\nReason: ' + $('Qualifier').item.json.reason + '\\nCall: ' + $('Validator').item.json.payload.started_at + ' to ' + $('Validator').item.json.payload.ended_at + '\\nAudio: ' + $('Validator').item.json.payload.audio_url + '\\n\\n[Notes]\\n' + ($('Validator').item.json.payload.notes || '')}, associations: [{to: {id: $json.id}, types: [{associationCategory: 'HUBSPOT_DEFINED', associationTypeId: 3}]}]}) }}",
+        "options": {}
+      },
+      "credentials": { "hubspotAppToken": { "name": "HubSpot App Token account" } }
+    },
+    {
+      "name": "Set: Response NQ",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [1840, 220],
+      "parameters": {
+        "mode": "manual",
+        "includeOtherFields": false,
+        "assignments": {
+          "assignments": [
+            { "id": "rnq1", "name": "route", "value": "non_qualified", "type": "string" },
+            { "id": "rnq2", "name": "call_id", "value": "={{ $('Validator').item.json.payload.call_id }}", "type": "string" },
+            { "id": "rnq3", "name": "contact_id", "value": "={{ $('HubSpot: Create Contact NQ').item.json.id }}", "type": "string" },
+            { "id": "rnq4", "name": "deal_id", "value": "={{ $json.id }}", "type": "string" },
+            { "id": "rnq5", "name": "deal_url", "value": "={{ 'https://app-na2.hubspot.com/contacts/245727791/record/0-3/' + $json.id }}", "type": "string" },
+            { "id": "rnq6", "name": "reason", "value": "={{ $('Qualifier').item.json.reason }}", "type": "string" },
+            { "id": "rnq7", "name": "phase", "value": "phase-2", "type": "string" }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "name": "HubSpot: Create Contact HR",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1440, 360],
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.hubapi.com/crm/v3/objects/contacts",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "hubspotAppToken",
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({properties: {firstname: (($('Validator').item.json.payload.intake.name || '').split(' ')[0] || 'Caller'), lastname: (($('Validator').item.json.payload.intake.name || '').split(' ').slice(1).join(' ') || 'Unknown'), phone: $('Validator').item.json.payload.caller_phone, lifecyclestage: 'subscriber'} }) }}",
+        "options": {}
+      },
+      "credentials": { "hubspotAppToken": { "name": "HubSpot App Token account" } }
+    },
+    {
+      "name": "HubSpot: Create Deal HR",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1640, 360],
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.hubapi.com/crm/v3/objects/deals",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "hubspotAppToken",
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({properties: {dealname: 'MVA Intake - ' + ($('Validator').item.json.payload.intake.name || 'Unknown') + ' - ' + $('Validator').item.json.payload.intake.incident_date, pipeline: $('Validator').item.json.config.pipeline_id, dealstage: $('Qualifier').item.json.hubspot_stage_id, incident_date: $('Validator').item.json.payload.intake.incident_date, incident_location: $('Validator').item.json.payload.intake.location, within_statute: $('Qualifier').item.json.within_statute ? 'true' : 'false', at_fault: $('Validator').item.json.payload.qualification.at_fault ? 'true' : 'false', received_treatment: $('Validator').item.json.payload.qualification.received_treatment ? 'true' : 'false', other_party_insured: $('Validator').item.json.payload.qualification.other_party_insured ? 'true' : 'false', review_flags: ($('Validator').item.json.payload.qualification.flags || []).join(','), vapi_call_id: $('Validator').item.json.payload.call_id, description: 'Injury: ' + ($('Validator').item.json.payload.intake.injury_description || 'n/a') + '\\nCaller age: ' + $('Validator').item.json.payload.intake.age + ' | Death: ' + ($('Validator').item.json.payload.intake.death_involved ? 'Yes' : 'No') + '\\nReason: ' + $('Qualifier').item.json.reason + '\\nCall: ' + $('Validator').item.json.payload.started_at + ' to ' + $('Validator').item.json.payload.ended_at + '\\nAudio: ' + $('Validator').item.json.payload.audio_url + '\\n\\n[Notes]\\n' + ($('Validator').item.json.payload.notes || '')}, associations: [{to: {id: $json.id}, types: [{associationCategory: 'HUBSPOT_DEFINED', associationTypeId: 3}]}]}) }}",
+        "options": {}
+      },
+      "credentials": { "hubspotAppToken": { "name": "HubSpot App Token account" } }
+    },
+    {
+      "name": "Twilio: SMS HR",
+      "type": "n8n-nodes-base.twilio",
+      "typeVersion": 1,
+      "position": [1840, 360],
+      "parameters": {
+        "resource": "sms",
+        "operation": "send",
+        "from": "={{ $('Validator').item.json.config.twilio_from }}",
+        "to": "={{ $('Validator').item.json.config.attorney_phone }}",
+        "message": "={{ 'REVIEW - Flagged MVA lead needs manual check. ' + $('Validator').item.json.payload.intake.name + ', ' + $('Validator').item.json.payload.intake.location + '. Flags: ' + ($('Validator').item.json.payload.qualification.flags || []).join(',') + '. Deal: https://app-na2.hubspot.com/contacts/245727791/record/0-3/' + $json.id }}",
+        "toWhatsapp": false
+      },
+      "onError": "continueRegularOutput",
+      "credentials": { "twilioApi": { "name": "Twilio account" } }
+    },
+    {
+      "name": "Set: Response HR",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [2040, 360],
+      "parameters": {
+        "mode": "manual",
+        "includeOtherFields": false,
+        "assignments": {
+          "assignments": [
+            { "id": "rhr1", "name": "route", "value": "human_review", "type": "string" },
+            { "id": "rhr2", "name": "call_id", "value": "={{ $('Validator').item.json.payload.call_id }}", "type": "string" },
+            { "id": "rhr3", "name": "contact_id", "value": "={{ $('HubSpot: Create Contact HR').item.json.id }}", "type": "string" },
+            { "id": "rhr4", "name": "deal_id", "value": "={{ $('HubSpot: Create Deal HR').item.json.id }}", "type": "string" },
+            { "id": "rhr5", "name": "sms_sid", "value": "={{ $json.sid }}", "type": "string" },
+            { "id": "rhr6", "name": "deal_url", "value": "={{ 'https://app-na2.hubspot.com/contacts/245727791/record/0-3/' + $('HubSpot: Create Deal HR').item.json.id }}", "type": "string" },
+            { "id": "rhr7", "name": "reason", "value": "={{ $('Qualifier').item.json.reason }}", "type": "string" },
+            { "id": "rhr8", "name": "phase", "value": "phase-2", "type": "string" }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "respond_ok",
+      "name": "Respond 200",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [2340, 220],
+      "parameters": {
+        "respondWith": "firstIncomingItem",
+        "options": {}
+      }
+    },
+    {
+      "name": "HTTP: Search Deal by call_id",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1140, 500],
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.hubapi.com/crm/v3/objects/deals/search",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "hubspotAppToken",
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({filterGroups: [{filters: [{propertyName: 'vapi_call_id', operator: 'EQ', value: $('Validator').item.json.payload.call_id}]}], properties: ['dealname', 'dealstage', 'vapi_call_id'], limit: 1}) }}",
+        "options": {}
+      },
+      "credentials": { "hubspotAppToken": { "name": "HubSpot App Token account" } }
+    },
+    {
+      "name": "If Existing Deal",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [1340, 500],
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 2 },
+          "conditions": [
+            { "id": "dedup_cond", "leftValue": "={{ $json.total }}", "rightValue": 0, "operator": { "type": "number", "operation": "gt" } }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "name": "Set: Dedup Response",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [1540, 500],
+      "parameters": {
+        "mode": "manual",
+        "includeOtherFields": false,
+        "assignments": {
+          "assignments": [
+            { "id": "d1", "name": "duplicate", "value": true, "type": "boolean" },
+            { "id": "d2", "name": "call_id", "value": "={{ $('Validator').item.json.payload.call_id }}", "type": "string" },
+            { "id": "d3", "name": "deal_id", "value": "={{ $json.results[0].id }}", "type": "string" },
+            { "id": "d4", "name": "deal_url", "value": "={{ 'https://app-na2.hubspot.com/contacts/245727791/record/0-3/' + $json.results[0].id }}", "type": "string" },
+            { "id": "d5", "name": "note", "value": "Already processed - duplicate call_id", "type": "string" },
+            { "id": "d6", "name": "phase", "value": "phase-3", "type": "string" }
+          ]
+        },
+        "options": {}
+      }
+    }
+  ],
+  "connections": {
+    "Webhook": { "main": [[{ "node": "Config", "type": "main", "index": 0 }]] },
+    "Config": { "main": [[{ "node": "Validator", "type": "main", "index": 0 }]] },
+    "Validator": { "main": [[{ "node": "If Valid", "type": "main", "index": 0 }]] },
+    "If Valid": {
+      "main": [
+        [{ "node": "Qualifier", "type": "main", "index": 0 }],
+        [{ "node": "Build Error Body", "type": "main", "index": 0 }]
+      ]
+    },
+    "Qualifier": { "main": [[{ "node": "HTTP: Search Deal by call_id", "type": "main", "index": 0 }]] },
+    "HTTP: Search Deal by call_id": { "main": [[{ "node": "If Existing Deal", "type": "main", "index": 0 }]] },
+    "If Existing Deal": {
+      "main": [
+        [{ "node": "Set: Dedup Response", "type": "main", "index": 0 }],
+        [{ "node": "Switch Route", "type": "main", "index": 0 }]
+      ]
+    },
+    "Set: Dedup Response": { "main": [[{ "node": "Respond 200", "type": "main", "index": 0 }]] },
+    "Switch Route": {
+      "main": [
+        [{ "node": "HubSpot: Create Contact Q", "type": "main", "index": 0 }],
+        [{ "node": "HubSpot: Create Contact NQ", "type": "main", "index": 0 }],
+        [{ "node": "HubSpot: Create Contact HR", "type": "main", "index": 0 }]
+      ]
+    },
+    "HubSpot: Create Contact Q": { "main": [[{ "node": "HubSpot: Create Deal Q", "type": "main", "index": 0 }]] },
+    "HubSpot: Create Deal Q": { "main": [[{ "node": "Twilio: SMS Q", "type": "main", "index": 0 }]] },
+    "Twilio: SMS Q": { "main": [[{ "node": "Set: Response Q", "type": "main", "index": 0 }]] },
+    "Set: Response Q": { "main": [[{ "node": "Respond 200", "type": "main", "index": 0 }]] },
+    "HubSpot: Create Contact NQ": { "main": [[{ "node": "HubSpot: Create Deal NQ", "type": "main", "index": 0 }]] },
+    "HubSpot: Create Deal NQ": { "main": [[{ "node": "Set: Response NQ", "type": "main", "index": 0 }]] },
+    "Set: Response NQ": { "main": [[{ "node": "Respond 200", "type": "main", "index": 0 }]] },
+    "HubSpot: Create Contact HR": { "main": [[{ "node": "HubSpot: Create Deal HR", "type": "main", "index": 0 }]] },
+    "HubSpot: Create Deal HR": { "main": [[{ "node": "Twilio: SMS HR", "type": "main", "index": 0 }]] },
+    "Twilio: SMS HR": { "main": [[{ "node": "Set: Response HR", "type": "main", "index": 0 }]] },
+    "Set: Response HR": { "main": [[{ "node": "Respond 200", "type": "main", "index": 0 }]] },
+    "Build Error Body": { "main": [[{ "node": "Respond 400", "type": "main", "index": 0 }]] }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "all"
+  }
+}

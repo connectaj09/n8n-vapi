@@ -52,10 +52,12 @@ Read `project-building.md` for the full architecture. Read `AGENTS.md` for the d
 
 ## Current State
 
-- Phase 0 (domain) ✅ | Phase 1 (webhook scaffold) ✅ | Phase 2 (HubSpot + Twilio integrations) ✅ | Phase 3 (live Vapi) ⏳
-- Active workflow: `MVA-Intake-v0.1-Phase1`, n8n ID `Z9MKDm6ULzQtmRqA`
-- Webhook URL: `http://localhost:5678/webhook/mva-intake`
-- 4/4 fixtures pass end-to-end (`bash scripts/test-intake.sh`)
+- Phase 0 (domain) ✅ | Phase 1 (webhook scaffold) ✅ | Phase 2 (HubSpot + Twilio) ✅ | Phase 3 (dedup + Vapi-ready) ✅ — pending first live call
+- Active workflow: `MVA-Intake-v0.1-Phase1`, n8n ID `Z9MKDm6ULzQtmRqA`, 23 nodes
+- Webhook URL: `http://localhost:5678/webhook/mva-intake` (local) — Vapi hits this via ngrok
+- **5/5 fixtures pass** end-to-end via `bash scripts/test-intake.sh` (qualified, non_qualified, human_review, invalid, dedup)
+- Vapi assistant config: `docs/vapi-setup.md` (copy-paste reference; assistant lives in Vapi dashboard)
+- ngrok launcher: `bash scripts/ngrok-start.sh` (free tier; URL rotates per session)
 
 ## Repo Layout
 
@@ -63,7 +65,9 @@ Read `project-building.md` for the full architecture. Read `AGENTS.md` for the d
 - `AGENTS.md` — Vapi ↔ n8n division of labor + frozen webhook payload contract
 - `fixtures/` — 4 mock Vapi payloads (qualified, non_qualified, human_review, invalid)
 - `workflows/mva-intake-v0.2.json` — importable snapshot of the live workflow
-- `scripts/test-intake.sh` — one-shot smoke runner against the local webhook
+- `scripts/test-intake.sh` — one-shot smoke runner (5 cases: 3 routes + invalid + dedup)
+- `scripts/ngrok-start.sh` — opens an ngrok tunnel so Vapi can reach our local n8n
+- `docs/vapi-setup.md` — Vapi assistant config reference (system prompt, `submit_intake` tool schema)
 - `Pipeline-ids.txt` — **gitignored** scratch file; contains live secrets, do not commit
 
 ## Qualification Criteria (MVA default)
